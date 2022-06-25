@@ -2,24 +2,26 @@ import calendar
 from datetime import date
 
 from django.contrib import admin
-from django.db.models import Sum, Count
-from django.utils.html import format_html
-from django.utils.html import mark_safe
+from django.db.models import Count, Sum
+from django.utils.html import format_html, mark_safe
 
-from .forms import StudentFeeAdd
-from .models import Student, StudentFee, FeeGroup, FeeType#, FeeSummary
+from .models import Guardian, Student, StudentFee
+from easyschool.utils import ExportCsvMixin
 
 # Register your models here.
-admin.site.register(FeeGroup)
-admin.site.register(FeeType)
 
 admin.site.site_header = "My School Admin"
 admin.site.site_title = "My School Admin Portal"
 admin.site.index_title = "Welcome to My School Portal"
 
 
+class GuardianInline(admin.TabularInline):
+    model = Guardian
+    extra = 1
+
+
 @admin.register(Student)
-class StudentAdmin(admin.ModelAdmin):
+class StudentAdmin(admin.ModelAdmin, ExportCsvMixin):
     """ Display Class of Student Model in Admin Panel"""
 
     # remove delete actions
@@ -46,25 +48,23 @@ class StudentAdmin(admin.ModelAdmin):
         unpaid_color = 'red'
 
         if self.is_studying:
-            obj = self.studentfee_set.last()
-            if obj is not None:  # if a record exists
-                if obj.valid_until >= date.today():  # if paid this month
+            fee = self.studentfee_set.last()
+            if fee is not None:  # if a record exists
+                if fee.valid_until >= date.today():  # if paid this month
                     return format_html(
                         '<span style="color: {};">{}</span>',
                         paid_color,
-                        calendar.month_name[int(obj.valid_until.month)] + ', ' + str(obj.valid_until.year)
+                        f'{calendar.month_name[int(fee.valid_until.month)]}, {str(fee.valid_until.year)}',
                     )
                 else:  # if not paid this month
                     return format_html(
                         '<span style="color: {};">{}</span>',
                         unpaid_color,
-                        calendar.month_name[int(obj.date.month)] + ', ' + str(obj.date.year)
+                        f'{calendar.month_name[int(fee.valid_until.month)]}, {str(fee.valid_until.year)}',
                     )
             else:  # if record does not exists
                 return format_html(
-                    '<span style="color: {};">{}</span>',
-                    unpaid_color,
-                    "No Fee Paid"
+                    '<span style="color: {};">{}</span>', unpaid_color, "No Fee Paid"
                 )
         else:
             return "Left School"
@@ -88,47 +88,54 @@ class StudentAdmin(admin.ModelAdmin):
 
     list_display = (
         'full_name',
-        'father_name',
         'is_studying',
         'gender',
         last_fee_submitted,
     )
 
-    list_filter = (
-        'is_studying',
-        'current_class',
-        'gender'
-    )
+    list_filter = ('is_studying', 'current_class', 'gender')
 
-    search_fields = (
-        'first_name', 'last_name', 'admission_no'
-    )
+    search_fields = ('first_name', 'last_name', 'admission_no')
 
     ordering = ('first_name',)
 
     fieldsets = (
-        ("School Record", {
-            'fields': (
-                'admission_no',
-                'date_of_admission',
-                'is_studying',
-                'current_class',
-                'profile_image',
-                'profile_image_display',  # callable function,
-            )
-        }),
-        ("Personal Information", {
-            'fields': ('first_name', 'last_name', 'date_of_birth', 'gender', 'address')
-        }),
-        ("Guardian Information", {
-            'fields': ('father_name', 'father_cnic', 'fathers_phone_no', 'fathers_proffesion')
-        })
+        (
+            "School Record",
+            {
+                'fields': (
+                    'admission_no',
+                    'date_of_admission',
+                    'is_studying',
+                    'current_class',
+                    'profile_image',
+                    'profile_image_display',  # callable function,
+                )
+            },
+        ),
+        (
+            "Personal Information",
+            {
+                'fields': (
+                    'first_name',
+                    'last_name',
+                    'date_of_birth',
+                    'gender',
+                    'address',
+                )
+            },
+        ),
     )
-
-    actions = ['expel_from_school', ]
+    inlines = [
+        GuardianInline,
+    ]
+    actions = [
+        'expel_from_school',
+        'export_as_csv',
+    ]
 
     def get_readonly_fields(self, request, obj=None):
-        """ Make admission_no and date_of_admission uneditable if
+        """Make admission_no and date_of_admission uneditable if
         opened the admin change form but editable if opened
         the create form
         """
@@ -136,11 +143,13 @@ class StudentAdmin(admin.ModelAdmin):
         if obj:  # if the object exists then make them readonly
             return ['admission_no', 'date_of_admission', 'profile_image_display']
         else:
-            return ['profile_image_display', ]
+            return [
+                'profile_image_display',
+            ]
 
 
 @admin.register(StudentFee)
-class StudentFeeAdmin(admin.ModelAdmin):
+class StudentFeeAdmin(admin.ModelAdmin, ExportCsvMixin):
     """ Admin display class for the model StudentFee """
 
     # Delete Delete Action from admin
@@ -150,16 +159,9 @@ class StudentFeeAdmin(admin.ModelAdmin):
             del actions['delete_selected']
         return actions
 
-    form = StudentFeeAdd
-
-    raw_id_fields = (
-        'student',
-        'fee_group',
-        )
+    raw_id_fields = ('student',)
     # Filtering
-    list_filter = (
-        'valid_until',
-    )
+    list_filter = ('valid_until', 'total_amount')
 
     # searching
     search_fields = [
@@ -175,37 +177,22 @@ class StudentFeeAdmin(admin.ModelAdmin):
         'date_submitted',
     )
 
+    actions = [
+        'export_as_csv',
+    ]
 
-# @admin.register(FeeSummary)
-# class FeeSummary(admin.ModelAdmin):
-#     change_list_template = 'students/admin/fee_summary_change_list.html'
-#     date_hierarchy = 'date'
 
-#     def changelist_view(self, request, extra_context=None):
-#         response = super().changelist_view(
-#             request,
-#             extra_context=extra_context,
-#         )
+@admin.register(Guardian)
+class GuardianAdmin(admin.ModelAdmin, ExportCsvMixin):
+    list_display = (
+        'name',
+        'gender',
+        'relation_to_student',
+        'social_security_number',
+        'phone_number',
+        'profession',
+    )
 
-#         try:
-#             qs = response.context_data['cl'].queryset
-#         except (AttributeError, KeyError):
-#             return response
-
-#         metrics = {
-#             'total': Count('id'),
-#             'total_sales': Sum('amount'),
-#         }
-
-#         response.context_data['summary'] = list(
-#             qs
-#                 .values('date')
-#                 .annotate(**metrics)
-#                 .order_by('date')
-#         )
-
-#         response.context_data['summary_total'] = dict(
-#             qs.aggregate(**metrics)
-#         )
-
-#         return response
+    actions = [
+        'export_as_csv',
+    ]
